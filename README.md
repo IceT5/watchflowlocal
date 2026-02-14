@@ -122,6 +122,32 @@ When no `.watchflow/rules.yaml` exists and a PR is opened, Watchflow posts a **w
 
 ---
 
+## AI Models & Providers
+
+Watchflow supports multiple AI providers for LLM-powered features (natural language rule conversion, automatic rule generation):
+
+### Supported Providers
+
+- **OpenAI** — GPT-4 models (default)
+- **OpenRouter** — Access to Claude, GPT-4, and other models
+- **AWS Bedrock** — Enterprise deployments with Claude, Anthropic models
+- **Google Vertex AI** — Gemini and Claude models
+- **Self-hosted (OpenAI-compatible)** — Your own GLM, vLLM, or any OpenAI-compatible service
+
+### Quick Setup for Self-hosted Models
+
+Using your own GLM or OpenAI-compatible model? See **[GLM Setup Guide](GLM_SETUP.md)** for detailed configuration instructions.
+
+**Basic configuration for self-hosted GLM:**
+```env
+AI_PROVIDER=openai
+OPENAI_API_KEY=your_api_key
+OPENAI_MODEL=GLM-4.7-AWQ
+OPENAI_BASE_URL=http://your-server.com/mlops-service/api/v2/agentService/v1/
+```
+
+---
+
 ## Docs and support
 
 - [Quick Start](docs/getting-started/quick-start.md)
