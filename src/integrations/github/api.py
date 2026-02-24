@@ -131,17 +131,32 @@ class GitHubClient:
         self, repo_full_name: str, installation_id: int | None = None, user_token: str | None = None
     ) -> dict[str, Any] | None:
         """Fetch repository metadata (default branch, language, etc.). Supports public access."""
-        headers = await self._get_auth_headers(
-            installation_id=installation_id, user_token=user_token, allow_anonymous=True
-        )
-        if not headers:
-            return None
-        url = f"{config.github.api_base_url}/repos/{repo_full_name}"
-        session = await self._get_session()
-        async with session.get(url, headers=headers) as response:
-            if response.status == 200:
-                data = await response.json()
-                return cast("dict[str, Any]", data)
+        try:
+            headers = await self._get_auth_headers(
+                installation_id=installation_id, user_token=user_token, allow_anonymous=True
+            )
+            if not headers:
+                logger.error(f"get_repository: No headers returned for {repo_full_name}")
+                return None
+            
+            url = f"{config.github.api_base_url}/repos/{repo_full_name}"
+            logger.info(f"get_repository: Fetching from {url} with headers: {list(headers.keys())}")
+
+            session = await self._get_session()
+            async with session.get(url, headers=headers) as response:
+                logger.info(f"get_repository: Response status {response.status} for {repo_full_name}")
+                if response.status == 200:
+                    data = await response.json()
+                    logger.info(f"get_repository: Successfully fetched {repo_full_name}")
+                    return cast("dict[str, Any]", data)
+                else:
+                    error_text = await response.text()
+                    logger.error(f"get_repository: Failed for {repo_full_name}. Status: {response.status}, Response: {error_text[:200]}") 
+                    return None
+        except Exception as e:
+            logger.error(f"get_repository: Exception for {repo_full_name}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
 
     async def list_directory_any_auth(
@@ -250,18 +265,32 @@ class GitHubClient:
     ) -> list[dict[str, Any]]:
         """List pull requests for a repository."""
         try:
-            headers = await self._get_auth_headers(installation_id=installation_id, user_token=user_token)
+            headers = await self._get_auth_headers(
+                installation_id=installation_id, 
+                user_token=user_token,
+                allow_anonymous=True # CRITICAL: Allow anonymous access for public repos
+            )
             if not headers:
+                logger.error(f"No headers returned for {repo} - should never happen with allow_anonymous=True")
                 return []
             url = f"{config.github.api_base_url}/repos/{repo}/pulls?state={state}&per_page={min(per_page, 100)}"
+            logger.info(f"Fetching PRs from: {url} with headers: {headers}")
 
             session = await self._get_session()
             async with session.get(url, headers=headers) as response:
+                logger.info(f"GitHub API response status: {response.status} for {url}")
                 if response.status == 200:
-                    return cast("list[dict[str, Any]]", await response.json())
+                    data = await response.json()
+                    logger.info(f"Successfully fetched {len(data)} PRs for {repo}")
+                    return cast("list[dict[str, Any]]", data)
+                else:
+                    error_text = await response.text()
+                    logger.error(f"Failed to fetch PRs from {repo}. Status: {response.status}, Response: {error_text}")
                 return []
         except Exception as e:
             logger.error(f"Error listing PRs for {repo}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return []
 
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -271,25 +300,45 @@ class GitHubClient:
         Architectural Note:
         - Creates a new session if none exists or if the current session is closed.
         - Also recreates the session if the event loop has changed (common in test environments).
+        - Disables SSL verification for Windows compayibility.
         """
+        import ssl
+        # Create an SSL context that doesn't verify certificates
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+
+        connector = aiohttp.TCPConnector(ssl=ssl_context)
+
+        logger.info(f"_get_session: Creating new connector with SSL disabled")
+
         try:
             if self._session is None or self._session.closed:
-                self._session = aiohttp.ClientSession()
+                logger.info(f"_get_session: No existing session or closed, creating new one")
+                self._session = aiohttp.ClientSession(connector=connector)
             else:
+                logger.info(f"_get_session: Reusing existing session")
                 # Check if we're in a different event loop (avoid deprecated .loop property)
                 try:
                     current_loop = asyncio.get_running_loop()
                     # Try to access session's internal loop to check if it's the same
                     # If the session's loop is closed, this will fail
                     if self._session._loop != current_loop or self._session._loop.is_closed():
+                        logger.info(f"_get_session: Event loop changed or closed, recreating session")
+                        if self._session._connector:
+                            await self._session._connector.close()
                         await self._session.close()
-                        self._session = aiohttp.ClientSession()
-                except RuntimeError:
+                        self._session = aiohttp.ClientSession(connector=connector)
+                except RuntimeError as e:
                     # No running loop or loop is closed, recreate session
+                    logger.warning(f"_get_session: RuntimeError checking event loop: {e}, recreating session")
                     self._session = aiohttp.ClientSession()
-        except Exception:
+        except Exception as e:
             # Fallback: ensure we have a valid session
-            self._session = aiohttp.ClientSession()
+            logger.error(f"_get_session: Exception during session creation: {e}")
+            self._session = aiohttp.ClientSession(connector=connector)
+
+        logger.info(f"_get_session: Returning session (closed={getattr(self._session, 'closed', 'unknown')})")   
         return self._session
 
     def _generate_jwt(self) -> str:

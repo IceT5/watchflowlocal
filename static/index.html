@@ -353,6 +353,20 @@
                 </div>
 
                 <div class="form-group">
+                    <label for="maxPrs">Maximum PRs to analyze</label>
+                    <input 
+                        type="number" 
+                        id="maxPrs" 
+                        name="maxPrs"
+                        value="50"
+                        min="1"
+                        max="200"
+                        placeholder="50"
+                    >
+                    <p class="hint">Number of recent open PRs to analyze (1-200, default: 50)</p>
+                </div>
+
+                <div class="form-group">
                     <span class="toggle-link" onclick="toggleOptional()">+ Advanced Options (Custom Rules, Token)</span>
                     <div id="optionalFields" class="collapsible">
                         <div class="form-group" style="margin-top: 1rem;">
@@ -361,12 +375,12 @@
                                 id="rulesYaml" 
                                 name="rulesYaml"
                                 placeholder="rules:
-  - description: &quot;PRs must have descriptive titles&quot;
+  - description: "PRs must have descriptive titles"
     enabled: true
     severity: medium
     event_types: [pull_request]
     parameters:
-      title_pattern: &quot;^feat|^fix|^docs&quot;"
+      title_pattern: "^feat|^fix|^docs"
                             ></textarea>
                             <p class="hint">Leave empty to use .watchflow/rules.yaml from the repository</p>
                         </div>
@@ -587,6 +601,7 @@
                         pr_number: prNumber ? parseInt(prNumber) : null,
                         rules_yaml: rulesYaml,
                         github_token: githubToken,
+                        max_prs: parseInt(document.getElementById('maxPrs').value) || 50,
                     }),
                 });
 
@@ -640,11 +655,53 @@
                 `;
             }
 
-            // Display violations
+            // Display PRs analyzed summary and violations
             const violationsContainer = document.getElementById('violationsContainer');
+
+            // Show PRs analyzed summary
+            let prSummary = '';
+            if (data.prs_analyzed && data.prs_analyzed.length > 1) {
+                prSummary = `<div style="background: rgba(99, 102, 241, 0.1); padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
+                    <strong> PR Analysis Summary</strong><br>
+                    <span style="color: #a1a1aa;">Analyzed ${data.prs_analyzed.length} PRs:</span><
+                </div>`;
+                violationsContainer.innerHTML = prSummary;
+            }
+
+            // Display violations
             if (data.violations && data.violations.length > 0) {
-                violationsContainer.innerHTML = '<div class="violations-list">' +
-                    data.violations.map(v => `
+                let violationsHtml = '<div class="violations-list">';
+
+                // Group violations by PR if multiple PRs were analyzed
+                if (data.prs_analyzed && data.prs_analyzed.length > 1) {
+                    // Show violations per PR
+                    violationsHtml += '<div style="margin-top: 1rem; "><strong>Violations by Pull Request:</strong></div>';
+                    data.prs_analyzed.forEach(pr => {
+                        const prViolations = data.violations.filter(v => v.pr_number === pr.number);
+                        if (prViolations.length > 0) {
+                            violationsHtml += `
+                                <div style="margin-top: 0.75rem; ">
+                                    <strong style="color: #818cf8;">PR #${pr.number}: ${escapeHtml(pr.title).substring(0, 80)}${pr.title.length > 80 ? '...' : ''}</strong>
+                                    <span class="status-badge" style="margin-left: 0.5rem; vertical-align: middle; font-size: 0.75rem; ">${pr.violations_count} violation${pr.violations_count > 1 ? 's' : ''}</span>
+                                </div>
+                            `;
+                            prViolations.forEach(v => {
+                                violationsHtml += `
+                                    <div class="violation-item ${v.severity?.toLowerCase() || 'medium'}" style="margin-left: 1rem; margin-top: 0.5rem;">
+                                        <div class="violation-header">
+                                            <span class="violation-title">${escapeHtml(v.rule_description || 'Rule Violation')}</span>
+                                            <span class="violation-severity severity-${v.severity?.toLowerCase() || 'medium'}">${v.severity || 'Medium'}</span>
+                                        </div>
+                                        <div class="violation-message">${escapeHtml(v.message || '')}</div>
+                                        ${v.how_to_fix ? `<div class="violation-fix">${escapeHtml(v.how_to_fix)}</div>` : ''}
+                                    </div>
+                                `;
+                            });
+                        }
+                    });
+                } else {
+                    // Single PR view
+                    violationsHtml += data.violations.map(v => `
                         <div class="violation-item ${v.severity?.toLowerCase() || 'medium'}">
                             <div class="violation-header">
                                 <span class="violation-title">${escapeHtml(v.rule_description || 'Rule Violation')}</span>
@@ -653,10 +710,13 @@
                             <div class="violation-message">${escapeHtml(v.message || '')}</div>
                             ${v.how_to_fix ? `<div class="violation-fix">${escapeHtml(v.how_to_fix)}</div>` : ''}
                         </div>
-                    `).join('') +
-                    '</div>';
-            } else {
-                violationsContainer.innerHTML = '<p style="color: #22c55e; text-align: center; padding: 1rem;">✓ No violations found. The PR passes all rules.</p>';
+                    `).join('') ;
+                }
+                
+                violationsHtml += '</div>';
+                violationsContainer.innerHTML += violationsHtml;
+            } else{
+                violationsContainer.innerHTML += '<p style="color: #22c55e; text-align: center; padding: 1rem;">✓ No violations found. The PR passes all rules.</p>';
             }
         }
 
@@ -732,8 +792,8 @@
             showLoading('ruleGenerationResult');
             
             try {
-                // Use test endpoint for demo purposes
-                const response = await fetch(`${API_BASE}/api/v1/rules/recommend-test`, {
+                // Use the real analysis endpoint (not the test endpoint)
+                const response = await fetch(`${API_BASE}/api/v1/rules/recommend`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -741,19 +801,27 @@
                     body: JSON.stringify({
                         repo_url: repoUrl,
                         github_token: githubToken,
+                        force_refresh: false, 
                     }),
                 });
 
-                const data = await response.json();
-                
+                if(!response.ok) {
+                    const errorData = await response.json();
+                    hideLoading('ruleGenerationResult');
+                    showNotification('error', `Failed to generate rules: ${errorData.error || 'Unknown error'}`);
+                    return;
+                }
+
+                const data = await response.json();                
                 hideLoading('ruleGenerationResult');
                 
-                if (data.success) {
-                    document.getElementById('generatedRules').textContent = JSON.stringify(data.rules, null, 2);
+                // Display the rules_yaml from the response
+                if (data.rules_yaml) {
+                    document.getElementById('generatedYAML').textContent = data.rules_yaml;
                     document.getElementById('ruleGenerationResult').style.display = 'block';
                     showNotification('success', 'Rules generated successfully!');
                 } else {
-                    showNotification('error', `Failed to generate rules: ${data.error || 'Unknown error'}`);
+                    showNotification('error', `Failed to generate rules: No rules returned}`);
                 }
             } catch (error) {
                 hideLoading('ruleGenerationResult');
@@ -839,13 +907,38 @@
             const element = document.getElementById(elementId);
             if (element) {
                 element.style.display = 'block';
-                element.innerHTML = '<div class="loading"><div class="spinner"></div><span>Processing...</span></div>';
+                // Don't replace innerHTML, just add loading overlay
+                if (!element.querySelector('.loading-overlay')){
+                    const overlay = document.createElement('div');
+                    overlay.className = 'loading-overlay';
+                    overlay.style.cssText = `
+                        position: absolute;
+                        top: 0;
+                        left: 0;
+                        right: 0;
+                        bottom: 0;
+                        background: rgba(0, 0, 0, 0.7);
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        gap: 0.75rem;
+                        border-radius: 8px;
+                        z-index: 10;
+                    `;
+                    overlay.innerHTML = '<div class="spinner" style="width: 24px; height: 24px; border: 3px solid #3f3f46; border-top-color: #6366f1; border-radius: 50%; animation: spin 1s linear infinite;"></div><span style="color: #fafafa;">Processing...</span>';
+                    element.style.position = 'relative';
+                    element.appendChild(overlay);
+                }
             }
         }
 
         function hideLoading(elementId) {
             const element = document.getElementById(elementId);
             if (element) {
+                const overlay = element.querySelector('.loading-overlay');
+                if (overlay) {
+                    overlay.remove();
+                }
                 element.style.display = 'none';
             }
         }

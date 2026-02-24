@@ -29,6 +29,7 @@ class Violation(BaseModel):
     message: str = Field(description="Explanation of why the rule failed")
     details: dict[str, Any] = Field(default_factory=dict, description="Additional context or metadata")
     how_to_fix: str | None = Field(default=None, description="Actionable advice for the user")
+    pr_number: int | None = Field(default=None, description="PR number this violation bellongs to (for batch analysis)")
 
 
 class Acknowledgment(BaseModel):

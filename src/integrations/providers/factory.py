@@ -86,6 +86,9 @@ def get_provider(
     # Add provider-specific config
     if provider_class == OpenAIProvider:
         provider_kwargs["api_key"] = config.ai.api_key
+        # Add base_url for OpenAI-compatible APIs(e.g., self-hosted GLM, vLLM)
+        if config.ai.base_url:
+            provider_kwargs["base_url"] = config.ai.base_url
     elif provider_class == OpenRouterProvider:
         provider_kwargs["api_key"] = config.ai.openrouter_api_key
 

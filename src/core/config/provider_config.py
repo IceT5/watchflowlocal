@@ -22,6 +22,9 @@ class ProviderConfig:
     provider: str = "openai"
     max_tokens: int = 4096
     temperature: float = 0.1
+    # OpenAI/OpenAI-Compatible fields
+    base_url: str | None = None # Custom base URL for OpenAI-compatible APIs
+    openai_model: str | None = None
     # Provider-specific model fields
     openai_model: str | None = None
     openrouter_model: str | None = None

@@ -127,12 +127,17 @@ class StandaloneAnalyzer:
             )
 
             if not repo_data:
+                error_msg = f"Repository not found or access denied: {repo_info.full_name}"
+                # Add helpful context about rate limiting
+                if not github_token:
+                    error_msg += ". Note: GitHub API has a rate limit of 60 req/hr for anonymous access. If you're seeing this frequently, consider adding a GitHub Personal Access Token for higher limits (5,000 req/hr)."
+
                 return AnalysisResult(
                     success=False,
                     violations=[],
                     rules_loaded=0,
                     processing_time_ms=int((time.time() - start_time) * 1000),
-                    error=f"Repository not found or access denied: {repo_info.full_name}",
+                    error=error_msg,
                     repo_info=repo_info,
                 )
 
@@ -218,10 +223,11 @@ class StandaloneAnalyzer:
         batch_mode: bool = False,
     ) -> AnalysisResult:
         """Analyze the latest open PRs in the repository."""
-        if batch_mode and max_prs > 20:
+        # Use pagination for any request > 20, otherwise use simple fetch
+        if max_prs > 20:
             prs = await self._fetch_all_prs_paginated(repo_info.full_name, github_token, limit=max_prs)
         else:
-            prs = await self._fetch_open_prs(repo_info.full_name, github_token, limit=min(max_prs, 20))
+            prs = await self._fetch_open_prs(repo_info.full_name, github_token, limit=max_prs)
         
         if not prs:
             return AnalysisResult(
@@ -291,24 +297,19 @@ class StandaloneAnalyzer:
     ) -> list[dict[str, Any]]:
         """Fetch latest open PRs from repository."""
         try:
-            headers = await self.github_client._get_auth_headers(
+            # Use GitHubClient's list_pull_requests method which handles SSL properly
+            result = await self.github_client.list_pull_requests(
+                repo=repo_full_name,
                 user_token=github_token,
-                allow_anonymous=True,
+                state="open",
+                per_page=limit,
             )
-            if not headers:
-                return []
-
-            import aiohttp
-            from src.core.config import config
-
-            url = f"{config.github.api_base_url}/repos/{repo_full_name}/pulls?state=open&sort=updated&direction=desc&per_page={limit}"
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers) as response:
-                    if response.status == 200:
-                        return await response.json()
-                    return []
+            logger.info(f"Successfully fetched {len(result)} open PRs for {repo_full_name}")
+            return result
         except Exception as e:
-            logger.error(f"Error fetching open PRs: {e}")
+            logger.error(f"Error fetching open PRs for {repo_full_name}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return []
 
     async def _fetch_all_prs_paginated(
@@ -338,15 +339,16 @@ class StandaloneAnalyzer:
             if not headers:
                 return None
 
-            import aiohttp
             from src.core.config import config
 
             url = f"{config.github.api_base_url}/repos/{repo_full_name}/pulls/{pr_number}"
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers) as response:
-                    if response.status == 200:
-                        return await response.json()
-                    return None
+
+            # Use the already-configured session (with SSL disabled)
+            session = await self.github_client._get_session()
+            async with session.get(url, headers=headers) as response:
+                if response.status == 200:
+                    return await response.json()
+                return None
         except Exception as e:
             logger.error(f"Error fetching PR data: {e}")
             return None
@@ -457,15 +459,16 @@ class StandaloneAnalyzer:
             if not headers:
                 return []
 
-            import aiohttp
             from src.core.config import config
 
             url = f"{config.github.api_base_url}/repos/{repo_full_name}/pulls/{pr_number}/reviews"
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers) as response:
-                    if response.status == 200:
-                        return await response.json()
-                    return []
+
+            # Use the already-configured session (with SSL disabled)
+            session = await self.github_client._get_session()
+            async with session.get(url, headers=headers) as response:
+                if response.status == 200:
+                    return await response.json()
+                return []
         except Exception as e:
             logger.error(f"Error fetching reviews: {e}")
             return []
@@ -482,15 +485,16 @@ class StandaloneAnalyzer:
             if not headers:
                 return []
 
-            import aiohttp
             from src.core.config import config
 
             url = f"{config.github.api_base_url}/repos/{repo_full_name}/pulls/{pr_number}/files"
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers) as response:
-                    if response.status == 200:
-                        return await response.json()
-                    return []
+
+            # Use the already-configured session (with SSL disabled)
+            session = await self.github_client._get_session()
+            async with session.get(url, headers=headers) as response:
+                if response.status == 200:
+                    return await response.json()
+                return []
         except Exception as e:
             logger.error(f"Error fetching files: {e}")
             return []
@@ -519,6 +523,8 @@ class StandaloneAnalyzer:
     ) -> list[Violation]:
         """Run rule evaluation and return violations."""
         try:
+            pr_number = event_data.get("pull_request_details", {}).get("number")
+
             result = await self.engine_agent.execute(
                 event_type="pull_request",
                 event_data=event_data,
@@ -530,6 +536,9 @@ class StandaloneAnalyzer:
                 eval_result = result.data["evaluation_result"]
                 if hasattr(eval_result, "violations"):
                     violations = [Violation.model_validate(v) for v in eval_result.violations]
+                    # Add pr_number to each violation for grouping
+                    for violation in violations:
+                        violation.pr_number = pr_number
 
             return violations
         except Exception as e:

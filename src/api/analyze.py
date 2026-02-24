@@ -99,14 +99,34 @@ async def analyze_repository(request: AnalyzeRequest) -> AnalyzeResponse:
     }
     ```
     """
+    import structlog
+    logger = structlog.get_logger()
+
+    logger.info(
+        "Received analysis request",
+        repository_url=request.repository_url,
+        pr_number=request.pr_number,
+        max_prs=request.max_prs,
+        has_rules_yaml=request.rules_yaml is not None,
+        has_token=request.github_token is not None,
+    )
+
     repo_info = GitHubURLParser.parse(request.repository_url)
 
     if not repo_info:
+        logger.error("invalid_repository_URL", repository_url=request.repository_url)
         raise HTTPException(
             status_code=400,
             detail="Invalid GitHub repository URL. Supported formats: "
             "https://github.com/owner/repo, owner/repo, or git@github.com:owner/repo.git",
         )
+    
+    logger.info(
+        "repository_parsed",
+        owner=repo_info.owner,
+        repo=repo_info.repo,
+        full_name=repo_info.full_name,
+    )
 
     result = await standalone_analyzer.analyze(
         repo_info=repo_info,
@@ -115,6 +135,14 @@ async def analyze_repository(request: AnalyzeRequest) -> AnalyzeResponse:
         github_token=request.github_token,
         max_prs=request.max_prs,
         batch_mode=request.batch_mode,
+    )
+
+    logger.info(
+        "analyze_request_completed",
+        success=result.success,
+        violations_count=len(result.violations),
+        processing_time_ms=result.processing_time_ms,
+        error=result.error,
     )
 
     return AnalyzeResponse(**result.to_dict())

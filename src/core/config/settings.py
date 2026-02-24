@@ -33,6 +33,7 @@ class Config:
         self.ai = ProviderConfig(
             provider=os.getenv("AI_PROVIDER", "openai"),
             api_key=os.getenv("OPENAI_API_KEY", ""),
+            base_url=os.getenv("OPENAI_BASE_URL"),  # Support for custon OpenAI-compatible APIs (GLM, vLLM, etc.)
             max_tokens=int(os.getenv("AI_MAX_TOKENS", "4096")),
             temperature=float(os.getenv("AI_TEMPERATURE", "0.1")),
             # Provider-specific model fields
